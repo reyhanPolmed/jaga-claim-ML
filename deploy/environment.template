@@ -1,0 +1,7 @@
+# Copy this file to .env on the server. These are placeholders, not credentials.
+DOCKERHUB_USERNAME=your-dockerhub-username
+IMAGE_TAG=latest
+JAGA_ML_SERVICE_TOKEN=replace-with-a-long-random-service-token
+JAGA_EXPLAIN_LLM_ENABLED=false
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash

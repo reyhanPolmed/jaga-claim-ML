@@ -1,0 +1,90 @@
+name: Build and publish Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME || 'local' }}/jaga-claim-ml
+          flavor: latest=false
+          tags: |
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build image for verification
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          push: false
+          tags: jaga-claim-ml:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify imports and non-root runtime
+        run: |
+          docker run --rm --entrypoint python jaga-claim-ml:ci -c \
+            "import os,sklearn; from jaga_claim.api.app import app; assert os.getuid()!=0; assert sklearn.__version__=='1.9.0'; assert any(r.path=='/v1/score' for r in app.routes); assert any(r.path=='/v1/explain' for r in app.routes); print('Serving image import check passed')"
+
+      - name: Verify HTTP behavior without private model data
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name ml-smoke -p 127.0.0.1:18010:8010 jaga-claim-ml:ci
+          trap 'docker rm -f ml-smoke >/dev/null' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18010/health -o /tmp/ml-health.json; then break; fi
+            sleep 2
+          done
+          python -c "import json; d=json.load(open('/tmp/ml-health.json')); assert d['status']=='unavailable'; print('Missing private artefacts correctly reported')"
+          code=$(curl --silent --output /tmp/ml-result.json --write-out '%{http_code}' http://127.0.0.1:18010/v1/metadata)
+          test "$code" = '503'
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request' && vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push verified image to Docker Hub
+        if: github.event_name != 'pull_request' && vars.DOCKERHUB_USERNAME != ''
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Configuration reminder
+        if: github.event_name != 'pull_request' && vars.DOCKERHUB_USERNAME == ''
+        run: echo 'Build checks completed; publish skipped. Set repository variable DOCKERHUB_USERNAME and secret DOCKERHUB_TOKEN, then run this workflow again.'

@@ -1,0 +1,133 @@
+JAGA-CLAIM ML - Docker Hub dan GitHub Actions
+
+Alur:
+Push ke main atau tag vX.Y.Z -> GitHub Actions membangun image Linux amd64
+-> smoke check tanpa data pribadi -> login Docker Hub -> push image.
+Pull request hanya membangun/memeriksa, tanpa login atau push.
+Image tidak mengandung .env, Markdown, konfigurasi agen, data, atau model terlatih.
+
+1. KONFIGURASI AKUN
+
+Di Docker Hub:
+- Buat repository bernama jaga-claim-ml pada akun Anda.
+- Buat personal access token dengan izin Read & Write untuk publikasi image.
+- Jangan masukkan token ini ke source code atau Dockerfile.
+
+Di GitHub repository reyhanPolmed/jaga-claim-ML:
+Settings -> Secrets and variables -> Actions.
+- Tab Variables: tambahkan DOCKERHUB_USERNAME = username Docker Hub Anda.
+- Tab Secrets: tambahkan DOCKERHUB_TOKEN = token Docker Hub tadi.
+Nama akun Docker Hub tidak harus sama dengan username GitHub.
+Tidak perlu memasukkan DeepSeek key, service token, atau data model ke GitHub Actions.
+
+Setelah itu buka Actions -> Build and publish Docker image -> Run workflow
+dan pilih main, atau lakukan push commit baru ke main.
+Jika DOCKERHUB_USERNAME belum diisi, workflow membangun/memeriksa image tetapi
+melewati langkah publikasi; ini bukan tanda bahwa image sudah ada di Docker Hub.
+Jika token hilang/tidak sah, langkah login akan gagal.
+
+Tag hasil:
+- USERNAME/jaga-claim-ml:latest untuk main.
+- USERNAME/jaga-claim-ml:sha-<short-commit> untuk pelacakan dan rollback.
+- USERNAME/jaga-claim-ml:1.0.0 bila Anda push tag v1.0.0.
+Gunakan tag sha/release pada server jika ingin mengunci versi tertentu.
+Workflow ini belum men-deploy atau me-restart server secara otomatis.
+
+2. FILE RUNTIME PADA SERVER
+
+Image berisi kode serving, Python 3.11, dan dependensi runtime yang versi
+langsungnya disamakan dengan laptop. Model dan data harus ditransfer terpisah
+melalui saluran privat, bukan melalui GitHub atau Docker Hub.
+Hanya gunakan engine.joblib yang berasal dari sumber tepercaya karena format
+joblib dapat menjalankan kode saat dimuat.
+
+Pada folder deployment server, siapkan:
+
+  compose.yaml
+  .env
+  runtime/
+    artifacts/
+      ACTIVE
+      hybrid-v1.1.0-dataset2025/
+        engine.joblib
+        model_card.json
+    data/
+      features/
+        history_store.parquet
+      curated/
+        participants_ref.parquet
+
+File sumber pada laptop berada pada folder artifacts dan data project ML.
+ACTIVE harus berisi nama folder versi yang benar. Gunakan engine/history/ref
+dari rebuild yang sama. Jangan mengganti salt atau identitas peserta untuk
+deployment ini; scoring mengonsumsi pseudonim yang sudah dibentuk pipeline.
+Data mentah DTA, feature mart, dan hasil scoring lama tidak diperlukan untuk
+menjalankan API. Mount dibuat read-only, dan file sumber wajib sudah ada.
+Pastikan user container UID/GID 10001 dapat membaca folder dan file runtime.
+Jika hak baca salah, jangan membuka akses data ke semua pengguna; atur owner/group
+secara terbatas dengan administrator server.
+
+3. ENVIRONMENT SERVER
+
+Salin deploy/environment.template menjadi .env di folder compose.yaml.
+Isi DOCKERHUB_USERNAME, IMAGE_TAG, serta JAGA_ML_SERVICE_TOKEN yang kuat.
+Jika menggunakan penjelasan LLM, set JAGA_EXPLAIN_LLM_ENABLED=true dan isi
+DEEPSEEK_API_KEY. Secrets ini hanya berada pada server, tidak di image.
+Jangan menimpa .env yang sudah berisi secret tanpa menyimpan konfigurasi lama.
+
+4. JALANKAN DI SERVER LINUX DENGAN DOCKER COMPOSE V2
+
+Jika image private, login menggunakan akun dengan akses pull:
+
+  docker login
+
+Dari folder compose.yaml:
+
+  docker compose pull
+  docker compose up -d
+  docker compose ps
+  docker compose logs --tail=100 ml
+  curl http://127.0.0.1:8010/health
+
+Tunggu pemuatan model selesai. Health harus status ok, bukan hanya HTTP 200.
+Container dapat berstatus starting selama pemuatan riwayat; healthcheck memberi
+masa awal 180 detik. Satu worker dipakai agar riwayat tidak digandakan per worker.
+Pantau penggunaan RAM server melalui docker stats dan sesuaikan kapasitas untuk
+ukuran riwayat; smoke check CI tidak menguji pemuatan model/data sesungguhnya.
+
+Jika model gagal dimuat, API tetap hidup, health berstatus unavailable,
+container menjadi unhealthy, dan /v1/score mengembalikan 503 tanpa skor rekaan.
+restart: unless-stopped tidak otomatis me-restart container hanya karena unhealthy;
+perbaiki penyebab (misalnya volume/izin/versi) lalu restart layanan bila perlu.
+
+Compose hanya membuka 127.0.0.1:8010 pada host. Untuk backend website pada host
+yang sama, gunakan http://127.0.0.1:8010 dan ML_SERVICE_TOKEN yang sama dengan
+JAGA_ML_SERVICE_TOKEN. Di dalam container website, 127.0.0.1 merujuk container itu
+sendiri; gunakan jaringan Docker bersama dan nama service ml:8010, atau reverse
+proxy/jaringan privat yang sesuai. Jangan membuka API ke internet tanpa kontrol
+akses jaringan dan TLS. Browser tidak menerima token layanan.
+
+5. UPDATE DAN ROLLBACK
+
+Sesudah image baru berhasil dipublikasi:
+
+  docker compose pull
+  docker compose up -d
+
+Untuk rollback, set IMAGE_TAG ke tag sha/release lama yang sudah ada kemudian
+jalankan kedua perintah di atas. Cocokkan juga versi artefak model dengan kode.
+Perubahan image tidak otomatis mengirim model baru atau mengubah data server.
+
+6. BUILD LOKAL OPSIONAL
+
+Aktifkan Docker Engine/Docker Desktop dengan Linux containers, lalu:
+
+  docker build -t jaga-claim-ml:local .
+
+Tanpa mount model/data, image dapat hidup tetapi belum siap scoring; ini perilaku
+yang diharapkan. Konfigurasi raw_dir Windows pada config dipakai untuk training
+lokal, bukan untuk serving di container. Training ulang tetap proses terpisah.
+
+Referensi resmi:
+https://docs.docker.com/build/ci/github-actions/push-multi-registries/
+https://docs.docker.com/build/ci/github-actions/manage-tags-labels/

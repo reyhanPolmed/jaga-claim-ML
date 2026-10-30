@@ -1,0 +1,12 @@
+# Allowlist: secrets, claim data and artefacts never enter the build context.
+**
+!Dockerfile
+!requirements-serve.txt
+!src/
+!src/**
+!configs/
+!configs/config.yaml
+src/**/__pycache__/
+src/**/*.pyc
+src/**/.env*
+src/**/*.md

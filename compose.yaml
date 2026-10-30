@@ -1,0 +1,38 @@
+services:
+  ml:
+    image: ${DOCKERHUB_USERNAME:?Set DOCKERHUB_USERNAME}/jaga-claim-ml:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:8010:8010"
+    environment:
+      JAGA_ML_SERVICE_TOKEN: ${JAGA_ML_SERVICE_TOKEN:?Set a service token}
+      JAGA_EXPLAIN_LLM_ENABLED: ${JAGA_EXPLAIN_LLM_ENABLED:-false}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+    volumes:
+      - type: bind
+        source: ./runtime/artifacts
+        target: /app/artifacts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./runtime/data/features/history_store.parquet
+        target: /app/data/features/history_store.parquet
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./runtime/data/curated/participants_ref.parquet
+        target: /app/data/curated/participants_ref.parquet
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
