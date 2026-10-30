@@ -1,0 +1,7 @@
+fusion:
+  weights:
+    anomaly: 0.751
+    duplicate: 0.0
+    peer: 0.014
+    rule: 0.235
+status: KANDIDAT - perlu locked-test & persetujuan sebelum dipromosikan

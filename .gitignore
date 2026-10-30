@@ -1,0 +1,44 @@
+# Secrets and local environments
+.env
+.env.*
+.venv*/
+venv/
+env/
+*.key
+*.pem
+
+# Data, trained artefacts, and generated reports stay local
+data/
+artifacts/
+reports/
+tmp/
+wheels/
+docs/
+*.joblib
+*.parquet
+*.dta
+*.log
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Markdown and AI-agent support files (requested exclusions)
+*.[mM][dD]
+.codex/
+.agents/
+.claude/
+.cursor/
+.github/copilot-instructions*
+.cursorrules
+.windsurfrules
+.aider*
+
+# Local fixtures derived from the source claims dataset
+examples/request_*.json
+examples/response_*.json

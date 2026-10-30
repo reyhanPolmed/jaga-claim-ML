@@ -1,0 +1,109 @@
+# =====================================================================
+# JAGA-CLAIM — Konfigurasi Hybrid Risk Engine (MVP)
+# Semua bobot & ambang di sini adalah KONFIGURASI OPERASIONAL awal,
+# bukan parameter ilmiah final. Wajib dievaluasi ulang terhadap hasil
+# review manusia (Dokumentasi hlm. 11, 13, 16).
+# =====================================================================
+versions:
+  model_version: hybrid-v1.1.0-dataset2025
+  rule_version: rules-v1.0.0
+  feature_version: features-v1.0.0
+
+paths:
+  raw_dir: 'D:\JAGA-CLAIM\dataset bpjs sample\2025\Data Sampel Reguler Edisi 2025\data' # read-only raw source
+  curated_dir: data/curated    # tabel klaim 1 baris / FKL02 (ter-pseudonim)
+  feature_dir: data/features   # feature mart point-in-time
+  artifacts_dir: artifacts     # model registry (versi aktif)
+  reports_dir: reports
+
+raw_files:
+  fkrtl: 202403_fkrtl.dta
+  dx_secondary: 202405_diagnosissekunder.dta
+  membership: 2015202401_kepesertaan.dta
+
+# Split temporal (Dokumentasi hlm. 12): train = periode awal,
+# valid = periode berikutnya (tuning threshold), test = terkunci.
+split:
+  train_end: "2024-08-31"
+  valid_end: "2024-10-31"
+
+pseudonym:
+  salt_env: JAGA_PSEUDO_SALT
+  dev_salt: "DEV-ONLY-CHANGE-ME"     # wajib diganti di lingkungan nyata
+  length: 20
+
+# ---------------- Engine 2: Peer-group statistical model --------------
+peer:
+  min_cohort: 30
+  mad_const: 1.4826
+  cost_scale_floor_frac: 0.05   # skala minimum = 5% median (tarif INA-CBG cenderung flat)
+  los_scale_floor_days: 1.0
+  z_start: 3.0                  # z di bawah ini -> skor 0
+  z_tau: 4.0                    # skor = 1 - exp(-(z - z_start)/tau) x gate selisih absolut
+  flag_z: 4.0                   # ambang reason code peer
+  min_abs_cost_gap: 500000      # selisih rupiah minimum agar COST_PEER_OUTLIER berarti
+  min_abs_los_gap: 3            # selisih hari minimum agar LOS_PEER_OUTLIER berarti
+  cost_levels:                  # hierarki cohort (paling spesifik -> umum); care_class dipertahankan
+    - [inacbg_code, tariff_regional, provider_type, care_class]   # karena tarif INA-CBG berbeda per kelas rawat
+    - [inacbg_code, tariff_regional, care_class]
+    - [inacbg_code, care_class]
+    - [inacbg_code]
+  los_levels:
+    - [inacbg_code, provider_type]
+    - [inacbg_code]
+    - [cmg, case_type, severity]
+  freq_levels:
+    - [inacbg_code]
+    - [cmg, case_type]
+
+# ---------------- Engine 3: Duplicate & temporal ----------------------
+duplicate:
+  lookback_episodes: 10         # bandingkan dengan 10 episode sebelumnya milik peserta
+  fuzzy_window_days: 3
+  fuzzy_flag_threshold: 0.90     # praktis hanya episode hari yang sama dgn kemiripan tinggi
+  weights: {same_primary_dx: 0.30, same_cbg: 0.30, sec_dx_jaccard: 0.15, cost_close: 0.15, same_procedure: 0.10}
+temporal:
+  freq_peer_quantile: 0.995     # frekuensi CBG yg sama 30 hari > p99.5 peer
+  freq_min_visits: 4
+  readmit_days: 7               # rawat inap ulang dx3 sama <= 7 hari
+  overlap_score: 0.8
+  readmit_score: 0.6
+
+# ---------------- Engine 4: Isolation Forest ---------------------------
+anomaly:
+  n_estimators: 300
+  max_samples: 512
+  train_sample: 400000
+  random_state: 42
+  contribution_start_quantile: 0.95   # hanya 5% teratas yang menyumbang skor A
+  features:
+    - log_billed
+    - cost_robust_z
+    - los_days
+    - los_robust_z
+    - severity
+    - sec_dx_count
+    - sec_dx_chapter_count
+    - special_component_count
+    - special_share
+    - procedure_count
+    - prior_visits_30d
+    - same_cbg_visits_30d
+    - days_since_last_visit
+    - age_years
+    - tariff_recon_ratio
+    - is_inpatient
+    - log_dx_cbg_rarity
+    - admit_primary_same
+
+# ---------------- Score fusion ----------------------------------------
+fusion:
+  weights: {rule: 0.30, peer: 0.25, duplicate: 0.25, anomaly: 0.20}
+  # Floor kebijakan: temuan deterministik berat tidak boleh tenggelam
+  # dalam rata-rata berbobot. Nilai floor dipilih agar masuk band minimal medium.
+  floors:
+    exact_duplicate: 0.60
+    critical_rule: 0.45
+  bands:                        # ditentukan dari distribusi skor periode VALIDASI
+    high_top_fraction: 0.01     # ~1% klaim teratas -> high
+    medium_top_fraction: 0.05   # ~5% klaim teratas -> medium atau lebih
